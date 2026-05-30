@@ -6,58 +6,22 @@ import { logger } from './logger';
 
 const TEMP_VOICE_DIR = path.join(os.tmpdir(), 'remoat-voice');
 
+const WHISPER_URL = process.env.WHISPER_URL || 'http://127.0.0.1:8765';
+
 /**
  * Check whether Whisper transcription is available.
  * Returns null if ready, or a user-facing setup message if not.
  */
-export function checkWhisperAvailability(): string | null {
-    // 1. Check nodejs-whisper package
+export async function checkWhisperAvailability(): Promise<string | null> {
     try {
-        require.resolve('nodejs-whisper');
-    } catch {
-        return (
-            '🔇 Voice transcription is not set up.\n\n' +
-            'To enable it, run:\n' +
-            '  npm install nodejs-whisper ffmpeg-static\n' +
-            '  npx nodejs-whisper download'
-        );
+        const response = await fetch(`${WHISPER_URL}/health`);
+        if (!response.ok) {
+            return `🔇 Local Whisper server health check failed (status ${response.status}).`;
+        }
+        return null;
+    } catch (error: any) {
+        return `🔇 Local Whisper server is offline (unreachable at ${WHISPER_URL}/health).\nError: ${error?.message || error}`;
     }
-
-    // 2. Check whisper-cli binary
-    const cppDir = path.join(
-        path.dirname(require.resolve('nodejs-whisper/package.json')),
-        'cpp', 'whisper.cpp', 'build', 'bin',
-    );
-    try {
-        const stat = require('fs').statSync(path.join(cppDir, 'whisper-cli'));
-        if (!stat.isFile()) throw new Error();
-    } catch {
-        return (
-            '🔇 Whisper is installed but not compiled.\n\n' +
-            'Run this to build it:\n' +
-            '  cd node_modules/nodejs-whisper/cpp/whisper.cpp\n' +
-            '  cmake -B build && cmake --build build --config Release\n\n' +
-            'Requires cmake (brew install cmake / apt install cmake).'
-        );
-    }
-
-    // 3. Check model file
-    const modelsDir = path.join(
-        path.dirname(require.resolve('nodejs-whisper/package.json')),
-        'models',
-    );
-    try {
-        const files = require('fs').readdirSync(modelsDir) as string[];
-        if (!files.some((f: string) => f.includes('base.en'))) throw new Error();
-    } catch {
-        return (
-            '🔇 Whisper model not downloaded.\n\n' +
-            'Run this once to fetch the base.en model (~140 MB):\n' +
-            '  npx nodejs-whisper download'
-        );
-    }
-
-    return null;
 }
 
 export interface TelegramVoiceInfo {
@@ -104,52 +68,31 @@ export async function downloadTelegramVoice(
 }
 
 /**
- * Transcribe a voice file using nodejs-whisper (whisper.cpp bindings).
+ * Transcribe a voice file using the local Whisper server HTTP API.
  * Returns the trimmed transcript string, or null if transcription fails.
  */
 export async function transcribeVoice(voicePath: string): Promise<string | null> {
     try {
-        // Set FFMPEG_PATH from ffmpeg-static if not already set, so nodejs-whisper
-        // can convert OGG→WAV without requiring a system ffmpeg install.
-        if (!process.env.FFMPEG_PATH) {
-            try {
-                const ffmpegStatic = require('ffmpeg-static') as string;
-                if (ffmpegStatic) {
-                    process.env.FFMPEG_PATH = ffmpegStatic;
-                }
-            } catch {
-                // ffmpeg-static not installed; rely on system ffmpeg
-                logger.warn('[VoiceHandler] ffmpeg-static not found, relying on system ffmpeg');
-            }
-        }
+        const fileData = await fs.readFile(voicePath);
+        const formData = new (globalThis as any).FormData();
+        const fileBlob = new (globalThis as any).Blob([fileData], { type: 'audio/ogg' });
+        formData.append('file', fileBlob, path.basename(voicePath));
 
-        const { nodewhisper } = require('nodejs-whisper') as typeof import('nodejs-whisper');
-
-        const result = await nodewhisper(voicePath, {
-            modelName: 'base.en',
-            autoDownloadModelName: 'base.en',
-            removeWavFileAfterTranscription: true,
-            whisperOptions: {
-                outputInText: true,
-                outputInSrt: false,
-                outputInVtt: false,
-                outputInCsv: false,
-                outputInJson: false,
-                wordTimestamps: false,
-            },
+        const response = await fetch(`${WHISPER_URL}/transcribe`, {
+            method: 'POST',
+            body: formData,
         });
 
-        const raw = typeof result === 'string'
-            ? result.trim()
-            : String(result ?? '').trim();
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`Whisper server returned status ${response.status}: ${errText}`);
+        }
 
-        // Strip Whisper timestamp prefixes like "[00:00:00.000 --> 00:00:02.000]"
-        const transcript = raw
-            .replace(/\[[\d:.]+\s*-->\s*[\d:.]+\]\s*/g, '')
-            .trim();
+        const data = await response.json() as { text: string };
+        const transcript = (data.text || '').trim();
 
         if (!transcript) {
-            logger.warn('[VoiceHandler] Whisper returned empty transcript');
+            logger.warn('[VoiceHandler] Whisper server returned empty transcript');
             return null;
         }
 
