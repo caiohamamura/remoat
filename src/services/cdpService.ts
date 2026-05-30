@@ -422,9 +422,24 @@ export class CdpService extends EventEmitter {
             logger.debug(`  - title="${p.title}" url=${p.url}`);
         }
 
-        // 1. Title match (fast path)
-        const titleMatch = workbenchPages.find((t: any) => t.title?.includes(projectName));
+        // 1. Title match (fast path) — try each ancestor segment of the path
+        // For a nested path like /home/user/opencode/remoat, try segments in
+        // reverse order: ["remoat", "opencode", "user", ...]
+        const pathSegments = workspacePath.split(/[\/\\]/).filter(Boolean).reverse();
+        let titleMatch: any = null;
+        let matchedSegment = projectName;
+        for (const segment of pathSegments) {
+            const found = workbenchPages.find((t: any) =>
+                t.title?.toLowerCase().includes(segment.toLowerCase())
+            );
+            if (found) {
+                titleMatch = found;
+                matchedSegment = segment;
+                break;
+            }
+        }
         if (titleMatch) {
+            logger.debug(`[CdpService] Title matched via segment "${matchedSegment}" for project "${projectName}"`);
             return this.connectToPage(titleMatch, projectName);
         }
 
