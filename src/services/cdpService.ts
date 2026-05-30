@@ -727,6 +727,10 @@ export class CdpService extends EventEmitter {
             const child = spawn(command, args, {
                 stdio: 'ignore',
                 shell: process.platform === 'win32',
+                env: {
+                    ...process.env,
+                    DISPLAY: process.env.DISPLAY || ':99',
+                },
             });
 
             child.once('error', (error) => {
