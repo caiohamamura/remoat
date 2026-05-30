@@ -1039,6 +1039,121 @@ export class CdpService extends EventEmitter {
         });
     }
 
+    private async clickSubmitButton(contextId?: number): Promise<{ ok: boolean; method?: string; error?: string }> {
+        const clickScript = `(() => {
+            const textbox = document.querySelector('div[aria-label="Message input"]') || 
+                            document.querySelector('div[role="textbox"][aria-label*="input" i]');
+            const editors = Array.from(document.querySelectorAll('${SELECTORS.CHAT_INPUT}'));
+            const visible = editors.filter(el => el.offsetParent !== null);
+            const editor = textbox || visible[visible.length - 1];
+            if (!editor) return { ok: false, error: 'No active editor found' };
+
+            // If the editor is already empty, the message has been sent successfully.
+            // Do not click the submit button to avoid double-submission or interrupting.
+            const content = (editor.textContent || editor.innerText || '').trim();
+            if (content === '') {
+                return { ok: true, method: 'already_sent_or_empty' };
+            }
+
+            // Excluded lists for safety (never click these buttons)
+            const isExcluded = (btn) => {
+                const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                const text = (btn.textContent || '').trim().toLowerCase();
+                
+                if (ariaLabel.includes('model') || ariaLabel.includes('context') || ariaLabel.includes('cancel') || ariaLabel.includes('stop') || ariaLabel.includes('settings') || ariaLabel.includes('menu') || ariaLabel.includes('close') || ariaLabel.includes('expand') || ariaLabel.includes('collapse')) {
+                    return true;
+                }
+                if (text.includes('model') || text.includes('context') || text.includes('cancel') || text.includes('stop')) {
+                    return true;
+                }
+                
+                const svg = btn.querySelector('svg');
+                if (svg) {
+                    const svgCls = String(svg.getAttribute('class') || '').toLowerCase();
+                    if (svgCls.includes('chevron') || svgCls.includes('settings') || svgCls.includes('menu') || svgCls.includes('plus') || svgCls.includes('x') || svgCls.includes('close')) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            let parent = editor.parentElement;
+            for (let i = 0; i < 5 && parent; i++) {
+                const buttons = Array.from(parent.querySelectorAll('button'));
+                const visibleButtons = buttons.filter(b => b.offsetParent !== null);
+                for (const btn of visibleButtons) {
+                    if (isExcluded(btn)) continue;
+
+                    const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                    const text = (btn.textContent || '').trim().toLowerCase();
+
+                    // Check positive indicators:
+                    if (ariaLabel.includes('send') || ariaLabel.includes('submit')) {
+                        btn.click();
+                        return { ok: true, method: 'parent_button_aria' };
+                    }
+
+                    const svg = btn.querySelector('svg');
+                    if (svg) {
+                        const cls = String(svg.getAttribute('class') || '').toLowerCase();
+                        if (cls.includes('arrow') || cls.includes('send') || cls.includes('up') || cls.includes('right')) {
+                            btn.click();
+                            return { ok: true, method: 'parent_button_svg' };
+                        }
+                    }
+
+                    if (btn.getAttribute('type') === 'submit') {
+                        btn.click();
+                        return { ok: true, method: 'parent_button_submit_type' };
+                    }
+                }
+                parent = parent.parentElement;
+            }
+
+            // Global fallback
+            const allButtons = Array.from(document.querySelectorAll('button'));
+            const visibleButtons = allButtons.filter(b => b.offsetParent !== null);
+            for (const btn of visibleButtons) {
+                if (isExcluded(btn)) continue;
+
+                const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                if (ariaLabel.includes('send') || ariaLabel.includes('submit')) {
+                    btn.click();
+                    return { ok: true, method: 'global_button_aria' };
+                }
+
+                const svg = btn.querySelector('svg');
+                if (svg) {
+                    const cls = String(svg.getAttribute('class') || '').toLowerCase();
+                    if (cls.includes('arrow') || cls.includes('send') || cls.includes('up') || cls.includes('right')) {
+                        btn.click();
+                        return { ok: true, method: 'global_button_svg' };
+                    }
+                }
+            }
+
+            return { ok: false, error: 'No submit button found matching target criteria' };
+        })()`;
+
+        try {
+            const callParams: Record<string, unknown> = {
+                expression: clickScript,
+                returnByValue: true,
+            };
+            if (contextId !== undefined) {
+                callParams.contextId = contextId;
+            }
+            const res = await this.call('Runtime.evaluate', callParams);
+            const val = res?.result?.value;
+            if (val && val.ok) {
+                return { ok: true, method: val.method };
+            }
+            return { ok: false, error: val?.error || 'Execution returned non-success value' };
+        } catch (e: any) {
+            return { ok: false, error: e.message || String(e) };
+        }
+    }
+
     /**
      * Detect file input in the UI and attach the specified files.
      */
@@ -1189,8 +1304,13 @@ export class CdpService extends EventEmitter {
 
         // 2. Send via Enter key
         await this.pressEnterToSend();
+        await new Promise(r => setTimeout(r, 250));
 
-        return { ok: true, method: 'enter', contextId: focusResult.contextId };
+        // 3. Click the submit button in the DOM
+        const clickRes = await this.clickSubmitButton(focusResult.contextId);
+        logger.debug('[CdpService] clickSubmitButton result:', clickRes);
+
+        return { ok: true, method: clickRes.ok ? 'click' : 'enter', contextId: focusResult.contextId };
     }
 
     /**
@@ -1217,8 +1337,12 @@ export class CdpService extends EventEmitter {
         await this.call('Input.insertText', { text });
         await new Promise(r => setTimeout(r, 200));
         await this.pressEnterToSend();
+        await new Promise(r => setTimeout(r, 250));
 
-        return { ok: true, method: 'enter', contextId: focusResult.contextId };
+        const clickRes = await this.clickSubmitButton(focusResult.contextId);
+        logger.debug('[CdpService] clickSubmitButton result:', clickRes);
+
+        return { ok: true, method: clickRes.ok ? 'click' : 'enter', contextId: focusResult.contextId };
     }
 
     /**
