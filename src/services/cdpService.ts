@@ -634,7 +634,7 @@ export class CdpService extends EventEmitter {
             );
         }
 
-        const launchArgs = [`--remote-debugging-port=${cdpPort}`, '--new-window', workspacePath];
+        const launchArgs = [`--remote-debugging-port=${cdpPort}`, '--reuse-window', workspacePath];
         logger.debug(`[CdpService] Launching Antigravity: ${antigravityCli} ${launchArgs.join(' ')}`);
         try {
             await this.runCommand(antigravityCli, launchArgs);
