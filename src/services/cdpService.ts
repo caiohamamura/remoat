@@ -565,12 +565,18 @@ export class CdpService extends EventEmitter {
                 const normalizedProject = projectName.toLowerCase();
                 const normalizedWorkspace = workspacePath.toLowerCase();
 
+                const workspaceSegments = normalizedWorkspace.split(/[/\\]/).filter(Boolean);
+                const projectSegments = normalizedProject.split(/[/\\]/).filter(Boolean);
+
                 if (
                     normalizedDetected.includes(normalizedProject) ||
-                    normalizedDetected.includes(normalizedWorkspace)
+                    normalizedDetected.includes(normalizedWorkspace) ||
+                    (normalizedDetected.startsWith('/') && normalizedWorkspace.startsWith(normalizedDetected)) ||
+                    workspaceSegments.includes(normalizedDetected) ||
+                    projectSegments.includes(normalizedDetected)
                 ) {
                     this.currentWorkspaceName = projectName;
-                    logger.debug(`[CdpService] Folder path match success: "${projectName}"`);
+                    logger.debug(`[CdpService] Folder path match success: "${projectName}" (detected="${detectedValue}")`);
                     return true;
                 }
             }
