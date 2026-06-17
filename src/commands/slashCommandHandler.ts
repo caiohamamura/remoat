@@ -1,5 +1,7 @@
+import { InlineKeyboard } from 'grammy';
 import { t } from "../utils/i18n";
 import { TemplateRepository } from '../database/templateRepository';
+import { DownloadCommandHandler } from './downloadCommandHandler';
 
 /**
  * Command execution result type definition
@@ -11,22 +13,30 @@ export interface CommandResult {
     message: string;
     /** Prompt retrieved from `/template` (for subsequent task execution, if present) */
     prompt?: string;
+    /** Path to a local document to send to the user */
+    documentPath?: string;
+    /** Custom UI payload with text and inline keyboard */
+    uiPayload?: { text: string; keyboard: InlineKeyboard };
 }
 
 export class SlashCommandHandler {
     private templateRepo: TemplateRepository;
+    private downloadHandler: DownloadCommandHandler;
 
     constructor(templateRepo: TemplateRepository) {
         this.templateRepo = templateRepo;
+        this.downloadHandler = new DownloadCommandHandler();
     }
 
     /**
      * Parse the slash command name and arguments, then route to the appropriate handler
      */
-    public async handleCommand(commandName: string, args: string[]): Promise<CommandResult> {
+    public async handleCommand(commandName: string, args: string[], options: { activeWorkspacePath?: string } = {}): Promise<CommandResult> {
         switch (commandName.toLowerCase()) {
             case 'template':
                 return this.handleTemplateCommand(args);
+            case 'download':
+                return this.downloadHandler.handleCommand(args, options.activeWorkspacePath);
             default:
                 return {
                     success: false,

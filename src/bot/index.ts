@@ -62,6 +62,7 @@ import { buildModelsUI, sendModelsUI } from '../ui/modelsUi';
 import { sendTemplateUI, TEMPLATE_BTN_PREFIX, parseTemplateButtonId } from '../ui/templateUi';
 import { sendAutoAcceptUI, AUTOACCEPT_BTN_ON, AUTOACCEPT_BTN_OFF, AUTOACCEPT_BTN_REFRESH } from '../ui/autoAcceptUi';
 import { handleScreenshot } from '../ui/screenshotUi';
+import { DL_NAV_PREFIX, DL_FILE_PREFIX, DL_PAGE_PREFIX, buildDownloadBrowserUI } from '../ui/downloadUi';
 import { buildProjectListUI, PROJECT_SELECT_ID, PROJECT_PAGE_PREFIX, parseProjectPageId } from '../ui/projectListUi';
 import { buildSessionPickerUI, SESSION_SELECT_ID, isSessionSelectId } from '../ui/sessionPickerUi';
 import {
@@ -1679,6 +1680,59 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             return;
         }
 
+        // Download browser navigation
+        if (data.startsWith(`${DL_NAV_PREFIX}:`)) {
+            const nextPath = data.slice(DL_NAV_PREFIX.length + 1);
+            const session = chatSessionRepo.findByChannelId(channelKey(ch));
+            let activeWorkspacePath = session?.workspacePath;
+            if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
+                activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
+            }
+            if (activeWorkspacePath) {
+                const { text, keyboard } = buildDownloadBrowserUI(activeWorkspacePath, nextPath, 0);
+                try { await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard }); } catch (e) { logger.debug('[DownloadUi] Edit failed:', e); }
+            }
+            await ctx.answerCallbackQuery();
+            return;
+        }
+
+        if (data.startsWith(`${DL_PAGE_PREFIX}:`)) {
+            const parts = data.slice(DL_PAGE_PREFIX.length + 1).split(':');
+            const page = parseInt(parts[0], 10);
+            const path = parts.slice(1).join(':');
+            const session = chatSessionRepo.findByChannelId(channelKey(ch));
+            let activeWorkspacePath = session?.workspacePath;
+            if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
+                activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
+            }
+            if (activeWorkspacePath) {
+                const { text, keyboard } = buildDownloadBrowserUI(activeWorkspacePath, path, isNaN(page) ? 0 : page);
+                try { await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard }); } catch (e) { logger.debug('[DownloadUi] Edit failed:', e); }
+            }
+            await ctx.answerCallbackQuery();
+            return;
+        }
+
+        if (data.startsWith(`${DL_FILE_PREFIX}:`)) {
+            const relPath = data.slice(DL_FILE_PREFIX.length + 1);
+            const session = chatSessionRepo.findByChannelId(channelKey(ch));
+            let activeWorkspacePath = session?.workspacePath;
+            if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
+                activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
+            }
+            if (activeWorkspacePath) {
+                const safePath = require('path').normalize(relPath).replace(/^(\.\.(\/|\\|$))+/, '');
+                const absolutePath = require('path').resolve(activeWorkspacePath, safePath);
+                if (absolutePath.startsWith(activeWorkspacePath) && require('fs').existsSync(absolutePath)) {
+                    await ctx.replyWithDocument(new InputFile(absolutePath));
+                } else {
+                    await ctx.reply('⚠️ File not found or access denied.');
+                }
+            }
+            await ctx.answerCallbackQuery();
+            return;
+        }
+
         // Project folder pagination
         if (data.startsWith('proj_pg:')) {
             const parts = data.slice('proj_pg:'.length).split(':');
@@ -2122,8 +2176,23 @@ bot.on('message:text', async (ctx) => {
                 return;
             }
 
-            const result = await slashCommandHandler.handleCommand(parsed.commandName, parsed.args || []);
-            await ctx.reply(result.message);
+            const session = chatSessionRepo.findByChannelId(channelKey(ch));
+            let activeWorkspacePath = session?.workspacePath;
+            if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
+                activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
+            }
+
+            const result = await slashCommandHandler.handleCommand(parsed.commandName, parsed.args || [], { activeWorkspacePath });
+            
+            if (result.documentPath) {
+                await ctx.replyWithDocument(new InputFile(result.documentPath));
+            }
+            if (result.uiPayload) {
+                await ctx.reply(result.uiPayload.text, { reply_markup: result.uiPayload.keyboard, parse_mode: 'HTML' });
+            }
+            if (result.message) {
+                await ctx.reply(result.message);
+            }
 
             if (result.prompt) {
                 const cdp = getCurrentCdp(bridge);
@@ -2318,8 +2387,25 @@ bot.on('message:text', async (ctx) => {
         // Check if transcription is a slash command
         const parsed = parseMessageContent(transcript);
         if (parsed.isCommand && parsed.commandName) {
-            const result = await slashCommandHandler.handleCommand(parsed.commandName, parsed.args || []);
-            await ctx.reply(`🎙️ "${transcript}"\n\n${result.message}`);
+            const session = chatSessionRepo.findByChannelId(channelKey(ch));
+            let activeWorkspacePath = session?.workspacePath;
+            if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
+                activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
+            }
+
+            const result = await slashCommandHandler.handleCommand(parsed.commandName, parsed.args || [], { activeWorkspacePath });
+            
+            if (result.message) {
+                await ctx.reply(`🎙️ "${transcript}"\n\n${result.message}`);
+            } else {
+                await ctx.reply(`🎙️ "${transcript}"`);
+            }
+            if (result.documentPath) {
+                await ctx.replyWithDocument(new InputFile(result.documentPath));
+            }
+            if (result.uiPayload) {
+                await ctx.reply(result.uiPayload.text, { reply_markup: result.uiPayload.keyboard, parse_mode: 'HTML' });
+            }
 
             if (result.prompt) {
                 const cdp = getCurrentCdp(bridge);

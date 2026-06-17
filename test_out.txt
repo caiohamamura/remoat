@@ -1,0 +1,52 @@
+
+> remoat@0.2.14 test:unit
+> jest tests/commands/downloadCommandHandler.test.ts
+
+FAIL tests/commands/downloadCommandHandler.test.ts
+  DownloadCommandHandler
+    ✓ returns error if no active workspace (3 ms)
+    ✕ returns ui payload for browsing when no arguments provided (3 ms)
+    ✓ returns documentPath for a valid file (1 ms)
+    ✓ returns ui payload if path is a directory (1 ms)
+    ✕ prevents directory traversal attacks (1 ms)
+    ✓ returns error for non-existent file (1 ms)
+
+  ● DownloadCommandHandler › returns ui payload for browsing when no arguments provided
+
+    expect(received).toContain(expected) // indexOf
+
+    Expected substring: "\"dl_file:testfile.txt\""
+    Received string:    "{\"inline_keyboard\":[[{\"text\":\"📁 subdir\",\"callback_data\":\"dl_nav:./subdir\"}],[{\"text\":\"📄 testfile.txt\",\"callback_data\":\"dl_file:./testfile.txt\"}],[{\"text\":\"⬆️ Up\",\"callback_data\":\"dl_nav:\"}],[]]}"
+
+      45 |         // Assert the keyboard contains testfile.txt and subdir
+      46 |         const jsonString = JSON.stringify(result.uiPayload?.keyboard);
+    > 47 |         expect(jsonString).toContain(`"${DL_FILE_PREFIX}:testfile.txt"`);
+         |                            ^
+      48 |         expect(jsonString).toContain(`"${DL_NAV_PREFIX}:subdir"`);
+      49 |     });
+      50 |
+
+      at Object.<anonymous> (tests/commands/downloadCommandHandler.test.ts:47:28)
+
+  ● DownloadCommandHandler › prevents directory traversal attacks
+
+    expect(received).toMatch(expected)
+
+    Expected pattern: /Access denied: path is outside the active workspace/
+    Received string:  "⚠️ File not found: ../downloadCommandHandler.test.ts"
+
+      69 |         const result = handler.handleCommand(['../downloadCommandHandler.test.ts'], testWorkspace);
+      70 |         expect(result.success).toBe(false);
+    > 71 |         expect(result.message).toMatch(/Access denied: path is outside the active workspace/);
+         |                                ^
+      72 |     });
+      73 |
+      74 |     it('returns error for non-existent file', () => {
+
+      at Object.<anonymous> (tests/commands/downloadCommandHandler.test.ts:71:32)
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 4 passed, 6 total
+Snapshots:   0 total
+Time:        2.277 s, estimated 4 s
+Ran all test suites matching tests/commands/downloadCommandHandler.test.ts.
