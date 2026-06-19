@@ -2704,6 +2704,7 @@ bot.on('message:text', async (ctx) => {
                     { command: 'start', description: 'Welcome message' },
                     { command: 'help', description: 'Show all commands' },
                     { command: 'project', description: 'Select a project' },
+                    { command: 'claudewd', description: 'Change claude-remote working directory' },
                     { command: 'new', description: 'Start a new chat session' },
                     { command: 'chat', description: 'Current session info' },
                     { command: 'mode', description: 'Change execution mode' },
