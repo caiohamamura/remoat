@@ -422,24 +422,14 @@ export class CdpService extends EventEmitter {
             logger.debug(`  - title="${p.title}" url=${p.url}`);
         }
 
-        // 1. Title match (fast path) — try each ancestor segment of the path
-        // For a nested path like /home/user/opencode/remoat, try segments in
-        // reverse order: ["remoat", "opencode", "user", ...]
-        const pathSegments = workspacePath.split(/[\/\\]/).filter(Boolean).reverse();
-        let titleMatch: any = null;
-        let matchedSegment = projectName;
-        for (const segment of pathSegments) {
-            const found = workbenchPages.find((t: any) =>
-                t.title?.toLowerCase().includes(segment.toLowerCase())
-            );
-            if (found) {
-                titleMatch = found;
-                matchedSegment = segment;
-                break;
-            }
-        }
+        // 1. Title match (fast path) — only match on the project name (leaf segment)
+        // to avoid false positives when workspaceBaseDir is a parent directory
+        // (e.g. matching "opencode" in title when selecting a sibling project)
+        const titleMatch = workbenchPages.find((t: any) =>
+            t.title?.toLowerCase().includes(projectName.toLowerCase())
+        );
         if (titleMatch) {
-            logger.debug(`[CdpService] Title matched via segment "${matchedSegment}" for project "${projectName}"`);
+            logger.debug(`[CdpService] Title matched project "${projectName}"`);
             return this.connectToPage(titleMatch, projectName);
         }
 
@@ -450,8 +440,9 @@ export class CdpService extends EventEmitter {
             return true;
         }
 
-        // 3. If not found by probe either, launch a new window
-        return this.launchAndConnectWorkspace(workspacePath, projectName);
+        // 3. If not found by probe either, open the folder in the existing Antigravity window
+        //    using the CLI with --reuse-window (avoids launching a redundant new instance)
+        return this.openFolderInExistingWindow(workspacePath, projectName, workbenchPages);
     }
 
     /**
@@ -614,6 +605,79 @@ export class CdpService extends EventEmitter {
         }
 
         return false;
+    }
+
+    /**
+     * Open a folder in the existing Antigravity window via the CLI.
+     * Used when Antigravity is already running but has a different folder open.
+     * Falls back to launchAndConnectWorkspace if the CLI command fails.
+     */
+    private async openFolderInExistingWindow(
+        workspacePath: string,
+        projectName: string,
+        existingPages: any[],
+    ): Promise<boolean> {
+        const antigravityCli = getAntigravityCliPath();
+        const launchArgs = ['--reuse-window', workspacePath];
+        logger.debug(`[CdpService] Opening folder in existing window: ${antigravityCli} ${launchArgs.join(' ')}`);
+
+        try {
+            await this.runCommand(antigravityCli, launchArgs);
+        } catch (error: any) {
+            logger.warn(`[CdpService] CLI open-folder failed: ${error?.message || String(error)}. Falling back to launch.`);
+            return this.launchAndConnectWorkspace(workspacePath, projectName);
+        }
+
+        // Poll until the workbench page title updates to reflect the new folder (max 15 seconds)
+        const maxWaitMs = 15000;
+        const pollIntervalMs = 1000;
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < maxWaitMs) {
+            await new Promise(r => setTimeout(r, pollIntervalMs));
+
+            let pages: any[] = [];
+            for (const port of this.ports) {
+                try {
+                    const list = await this.getJson(`http://127.0.0.1:${port}/json/list`);
+                    pages.push(...list);
+                } catch {
+                    // Next port
+                }
+            }
+
+            const workbenchPages = pages.filter(
+                (t: any) =>
+                    t.type === 'page' &&
+                    t.webSocketDebuggerUrl &&
+                    !t.title?.includes('Launchpad') &&
+                    !t.url?.includes('workbench-jetski-agent') &&
+                    t.url?.includes('workbench'),
+            );
+
+            // Check for title match
+            const match = workbenchPages.find((t: any) =>
+                t.title?.toLowerCase().includes(projectName.toLowerCase())
+            );
+            if (match) {
+                return this.connectToPage(match, projectName);
+            }
+
+            // Also try CDP probe (folder path verification)
+            const probeResult = await this.probeWorkbenchPages(workbenchPages, projectName, workspacePath);
+            if (probeResult) {
+                return true;
+            }
+        }
+
+        // If title never updated, connect to the first workbench page as a fallback
+        // (the folder was opened via CLI, it's likely the right page)
+        if (existingPages.length > 0) {
+            logger.warn(`[CdpService] Folder opened but title not updated. Connecting to first workbench page as "${projectName}".`);
+            return this.connectToPage(existingPages[0], projectName);
+        }
+
+        throw new Error(`Failed to open folder "${projectName}" in existing Antigravity window`);
     }
 
     /**

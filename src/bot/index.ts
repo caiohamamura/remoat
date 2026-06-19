@@ -64,6 +64,7 @@ import { sendAutoAcceptUI, AUTOACCEPT_BTN_ON, AUTOACCEPT_BTN_OFF, AUTOACCEPT_BTN
 import { handleScreenshot } from '../ui/screenshotUi';
 import { DL_NAV_PREFIX, DL_FILE_PREFIX, DL_PAGE_PREFIX, buildDownloadBrowserUI } from '../ui/downloadUi';
 import { buildProjectListUI, PROJECT_SELECT_ID, PROJECT_PAGE_PREFIX, parseProjectPageId } from '../ui/projectListUi';
+import { buildClaudeWdUI, CLAUDE_WD_SELECT_ID, CLAUDE_WD_NAV_PREFIX, CLAUDE_WD_PAGE_PREFIX, CLAUDE_WD_ERR } from '../ui/claudeWdUi';
 import { buildSessionPickerUI, SESSION_SELECT_ID, isSessionSelectId } from '../ui/sessionPickerUi';
 import {
     PLAN_VIEW_BTN, PLAN_PROCEED_BTN, PLAN_EDIT_BTN, PLAN_REFRESH_BTN, PLAN_PAGE_PREFIX,
@@ -1184,7 +1185,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             `/model — Display and change LLM model\n` +
             `/quota — Check model usage quota\n\n` +
             `<b>📁 Projects</b>\n` +
-            `/project — Display project list\n\n` +
+            `/project — Display project list\n` +
+            `/claudewd — Change claude-remote working directory\n\n` +
             `<b>📝 Templates</b>\n` +
             `/template — Show templates\n` +
             `/template_add — Register a template\n` +
@@ -1457,6 +1459,13 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     bot.command('project', async (ctx) => {
         const workspaces = workspaceService.scanWorkspaces();
         const { text, keyboard } = buildProjectListUI(workspaces, 0);
+        await replyHtml(ctx, text, keyboard);
+    });
+
+    // /claudewd command — change claude-remote.service WorkingDirectory
+    bot.command('claudewd', async (ctx) => {
+        const workspaces = workspaceService.scanWorkspaces();
+        const { text, keyboard } = buildClaudeWdUI(workspaces, 0);
         await replyHtml(ctx, text, keyboard);
     });
 
@@ -1780,6 +1789,74 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         }
 
         if (data === 'proj_err') {
+            await ctx.answerCallbackQuery({ text: '⚠️ Directory path is too deep to navigate via Telegram buttons.', show_alert: true });
+            return;
+        }
+
+        // Claude-remote WD: directory selection
+        if (data.startsWith(`${CLAUDE_WD_SELECT_ID}:`)) {
+            const selectedPath = data.slice(CLAUDE_WD_SELECT_ID.length + 1);
+            const absolutePath = workspaceService.getWorkspacePath(selectedPath);
+            if (!workspaceService.exists(selectedPath)) {
+                await ctx.answerCallbackQuery({ text: `Directory "${selectedPath}" not found.` });
+                return;
+            }
+
+            const servicePath = `${process.env.HOME}/.config/systemd/user/claude-remote.service`;
+            try {
+                const fs = require('fs');
+                let content = fs.readFileSync(servicePath, 'utf-8');
+                content = content.replace(/^WorkingDirectory=.*$/m, `WorkingDirectory=${absolutePath}`);
+                
+                const projectName = selectedPath.split('/').pop() || 'project';
+                content = content.replace(/^Description=Claude Remote Control \(.*\)$/m, `Description=Claude Remote Control (${projectName})`);
+                content = content.replace(/^ExecStart=\/usr\/bin\/expect \/home\/openclaw\/\.local\/bin\/claude-remote-wrapper\.exp \/home\/openclaw\/\.local\/bin\/claude .*$/m, `ExecStart=/usr/bin/expect /home/openclaw/.local/bin/claude-remote-wrapper.exp /home/openclaw/.local/bin/claude ${projectName}`);
+                
+                fs.writeFileSync(servicePath, content, 'utf-8');
+
+                const { execSync } = require('child_process');
+                execSync('systemctl --user daemon-reload', { timeout: 10000 });
+                execSync('systemctl --user restart claude-remote.service', { timeout: 15000 });
+
+                await ctx.editMessageText(
+                    `<b>🔧 Claude-Remote WorkDir Updated</b>\n\n` +
+                    `✅ <b>${escapeHtml(selectedPath)}</b>\n` +
+                    `<code>${escapeHtml(absolutePath)}</code>\n\n` +
+                    `Service reloaded and restarted successfully.`,
+                    { parse_mode: 'HTML' },
+                );
+                await ctx.answerCallbackQuery({ text: `WorkDir set: ${selectedPath}` });
+            } catch (e: any) {
+                logger.error('[ClaudeWD] Failed to update service:', e);
+                await ctx.answerCallbackQuery({ text: `⚠️ Error: ${e.message}`, show_alert: true });
+            }
+            return;
+        }
+
+        // Claude-remote WD: folder navigation
+        if (data.startsWith(`${CLAUDE_WD_NAV_PREFIX}:`)) {
+            const nextPath = data.slice(CLAUDE_WD_NAV_PREFIX.length + 1);
+            const workspaces = workspaceService.scanWorkspaces(nextPath);
+            const { text, keyboard } = buildClaudeWdUI(workspaces, 0, nextPath);
+            try { await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard }); } catch (e) { logger.debug('[ClaudeWD] Edit failed:', e); }
+            await ctx.answerCallbackQuery();
+            return;
+        }
+
+        // Claude-remote WD: folder pagination
+        if (data.startsWith(`${CLAUDE_WD_PAGE_PREFIX}:`)) {
+            const parts = data.slice(CLAUDE_WD_PAGE_PREFIX.length + 1).split(':');
+            const page = parseInt(parts[0], 10) || 0;
+            const nextPath = parts.slice(1).join(':');
+            const workspaces = workspaceService.scanWorkspaces(nextPath);
+            const { text, keyboard } = buildClaudeWdUI(workspaces, page, nextPath);
+            try { await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard }); } catch (e) { logger.debug('[ClaudeWD] Edit failed:', e); }
+            await ctx.answerCallbackQuery();
+            return;
+        }
+
+        // Claude-remote WD: path too deep error
+        if (data === CLAUDE_WD_ERR) {
             await ctx.answerCallbackQuery({ text: '⚠️ Directory path is too deep to navigate via Telegram buttons.', show_alert: true });
             return;
         }
