@@ -4,8 +4,11 @@ import { t } from '../utils/i18n';
 import { CommandResult } from './slashCommandHandler';
 import { buildDownloadBrowserUI } from '../ui/downloadUi';
 
+import { logger } from '../utils/logger';
+
 export class DownloadCommandHandler {
     public handleCommand(args: string[], activeWorkspacePath?: string): CommandResult {
+        logger.info(`[DownloadCommandHandler] handleCommand called with args: ${JSON.stringify(args)}, activeWorkspacePath: ${activeWorkspacePath}`);
         if (!activeWorkspacePath) {
             return {
                 success: false,

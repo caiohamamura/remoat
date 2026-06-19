@@ -695,7 +695,7 @@ export class ResponseMonitor {
     private stopGoneCount: number = 0;
     private quotaDetected: boolean = false;
     private seenProcessLogKeys: Set<string> = new Set();
-    private seenThinkingLogKeys: Set<string> = new Set();
+    private seenThinkingLogLengths: Map<string, number> = new Map();
     private structuredDiagLogged: boolean = false;
     private lastExtractionSource: 'structured' | 'legacy' | null = null;
     /** Consecutive WebSocket error count — stops monitor after threshold */
@@ -760,7 +760,7 @@ export class ResponseMonitor {
         this.stopGoneCount = 0;
         this.quotaDetected = false;
         this.seenProcessLogKeys = new Set();
-        this.seenThinkingLogKeys = new Set();
+        this.seenThinkingLogLengths = new Map();
         this.consecutiveWsErrors = 0;
 
         this.onPhaseChange?.(this.currentPhase, null);
@@ -818,8 +818,9 @@ export class ResponseMonitor {
                         if (key) this.seenProcessLogKeys.add(key);
                     }
                     for (const line of baselineClassified.thinkingLines) {
-                        const key = (line || '').replace(/\r/g, '').trim().slice(0, 200);
-                        if (key) this.seenThinkingLogKeys.add(key);
+                        const key = (line || '').replace(/\r/g, '').trim().slice(0, 50);
+                        const len = (line || '').trim().length;
+                        if (key) this.seenThinkingLogLengths.set(key, len);
                     }
                 }
             } catch (e) {
@@ -983,14 +984,15 @@ export class ResponseMonitor {
         for (const line of entries) {
             const normalized = (line || '').replace(/\r/g, '').trim();
             if (!normalized) continue;
-            const key = normalized.slice(0, 200);
-            if (this.seenThinkingLogKeys.has(key)) continue;
-            this.seenThinkingLogKeys.add(key);
+            const key = normalized.slice(0, 50);
+            const currentLen = normalized.length;
+            if (this.seenThinkingLogLengths.get(key) === currentLen) continue;
+            this.seenThinkingLogLengths.set(key, currentLen);
             // Also mark as seen in process logs to prevent cross-contamination
-            this.seenProcessLogKeys.add(key);
-            logger.debug('[ResponseMonitor] Emitting thinking entry:', normalized.slice(0, 80));
+            this.seenProcessLogKeys.add(normalized.slice(0, 200));
+            logger.debug('[ResponseMonitor] Emitting thinking entry length:', currentLen);
             try {
-                this.onThinkingLog?.(normalized.slice(0, 2000));
+                this.onThinkingLog?.(normalized);
             } catch (e) {
                 logger.debug('[ResponseMonitor] onThinkingLog callback error:', e);
             }

@@ -217,6 +217,7 @@ export function buildClickScript(buttonText: string): string {
         const allButtons = Array.from(document.querySelectorAll('button'));
         const target = allButtons.find(btn => {
             if (!btn.offsetParent) return false;
+            if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
             const buttonText = normalize(btn.textContent || '');
             const ariaLabel = normalize(btn.getAttribute('aria-label') || '');
             return buttonText === wanted ||
@@ -225,7 +226,23 @@ export function buildClickScript(buttonText: string): string {
                 ariaLabel.includes(wanted);
         });
         if (!target) return { ok: false, error: 'Button not found: ' + text };
+        
         target.click();
+        const rect = target.getBoundingClientRect();
+        if (rect && rect.width > 0 && rect.height > 0) {
+            const clickX = rect.left + rect.width / 2;
+            const clickY = rect.top + rect.height / 2;
+            const events = ['pointerdown', 'mousedown', 'mouseup', 'click'];
+            for (const type of events) {
+                target.dispatchEvent(new MouseEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    clientX: clickX,
+                    clientY: clickY,
+                }));
+            }
+        }
         return { ok: true };
     })()`;
 }

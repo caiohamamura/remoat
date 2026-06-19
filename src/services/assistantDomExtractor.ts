@@ -193,7 +193,7 @@ export function extractAssistantSegmentsPayloadScript(): string {
     };
 
     var looksLikeThinking = function(text) {
-        var stripped = (text || '').trim().replace(/^[^a-zA-Z]+/, '').toLowerCase();
+        var stripped = (text || '').trim().replace(/^(?:chevron_right|expand_more)\\s*/i, '').replace(/^[^a-zA-Z]+/, '').toLowerCase();
         if (!stripped) return false;
         return /^(?:thought for|thinking)\\b/i.test(stripped);
     };
@@ -401,7 +401,7 @@ export function extractAssistantSegmentsPayloadScript(): string {
         var summary = detail.querySelector('summary');
         var isThinkingBlock = false;
         if (summary) {
-            var summaryText = (summary.textContent || '').trim();
+            var summaryText = (summary.textContent || '').trim().replace(/^(?:chevron_right|expand_more)\\s*/i, '');
             // Strip leading emoji/non-letter chars for matching
             var summaryStripped = summaryText.replace(/^[^a-zA-Z]+/, '');
             isThinkingBlock = /^(?:thought for|thinking)\\b/i.test(summaryStripped);

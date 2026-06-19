@@ -139,6 +139,8 @@ const planEditPendingChannels = new Map<string, { projectName: string }>();
 /** Cached plan content pages per channel */
 const planContentCache = new Map<string, string[]>();
 
+let globalShowThinking = true;
+
 /** Re-export for use throughout this file */
 const channelKey = channelKeyFromChannel;
 
@@ -299,7 +301,7 @@ async function sendPromptToAntigravity(
     let liveActivityUpdateVersion = 0;
 
     // --- Ordered progress event stream ---
-    interface ProgressEntry { kind: 'thought' | 'thought-content' | 'activity'; text: string; }
+    interface ProgressEntry { kind: 'thought' | 'thought-content' | 'activity'; text: string; content?: string; }
     const progressLog: ProgressEntry[] = [];
     let thinkingActive = false;
     const thinkingContentParts: string[] = [];
@@ -335,10 +337,18 @@ async function sendPromptToAntigravity(
         for (const e of progressLog) {
             switch (e.kind) {
                 case 'thought':
-                    lines.push(`💭 <i>${escapeHtml(e.text)}</i>`);
+                    if (e.content && globalShowThinking) {
+                        lines.push(`💭 <b>${escapeHtml(e.text)}</b>\n\n<i>${escapeHtml(e.content)}</i>`);
+                    } else {
+                        lines.push(`💭 <i>${escapeHtml(e.text)}</i>`);
+                    }
                     break;
                 case 'thought-content':
-                    lines.push(`<i>${escapeHtml(e.text)}</i>`);
+                    if (e.content && globalShowThinking) {
+                        lines.push(`<i>${escapeHtml(e.content)}</i>`);
+                    } else {
+                        lines.push(`<i>${escapeHtml(e.text)}</i>`);
+                    }
                     break;
                 case 'activity':
                     lines.push(e.text); // already HTML-escaped
@@ -544,7 +554,8 @@ async function sendPromptToAntigravity(
             onPhaseChange: () => { },
             onProcessLog: (logText) => {
                 if (isFinalized) return;
-                const trimmed = (logText || '').trim();
+                const rawTrimmed = (logText || '').trim();
+                const trimmed = rawTrimmed.replace(/^(?:chevron_right|expand_more)\s*/i, '');
                 if (!trimmed || isJunkEntry(trimmed)) return;
                 const formatted = formatActivityLine(trimmed);
                 if (formatted) {
@@ -555,7 +566,8 @@ async function sendPromptToAntigravity(
             },
             onThinkingLog: (thinkingText) => {
                 if (isFinalized) return;
-                const trimmed = (thinkingText || '').trim();
+                const rawTrimmed = (thinkingText || '').trim();
+                const trimmed = rawTrimmed.replace(/^(?:chevron_right|expand_more)\s*/i, '');
                 if (!trimmed) return;
                 logger.debug('[Bot] onThinkingLog received:', trimmed.slice(0, 100));
 
@@ -579,18 +591,26 @@ async function sendPromptToAntigravity(
                     let merged = false;
                     for (let i = progressLog.length - 1; i >= 0; i--) {
                         if (progressLog[i].kind === 'thought') {
-                            // Only merge if no content heading attached yet (no " — ")
+                            progressLog[i].content = trimmed.slice(-2000);
+                            // Only append heading to text if we haven't yet
                             if (!progressLog[i].text.includes(' — ')) {
                                 progressLog[i].text += ` — ${heading}`;
-                                merged = true;
                             }
+                            merged = true;
                             break;
                         }
                     }
                     if (!merged && heading.length > 10) {
                         // No thought label to merge into — show as standalone content
-                        progressLog.push({ kind: 'thought-content', text: heading });
-                        trimProgressLog();
+                        // Find an existing standalone thought-content or create new
+                        const lastEntry = progressLog[progressLog.length - 1];
+                        if (lastEntry && lastEntry.kind === 'thought-content') {
+                            lastEntry.content = trimmed.slice(-2000);
+                            if (!lastEntry.text.includes(' — ')) lastEntry.text += ` — ${heading}`;
+                        } else {
+                            progressLog.push({ kind: 'thought-content', text: heading, content: trimmed.slice(-2000) });
+                            trimProgressLog();
+                        }
                     }
                 }
                 triggerProgressRefresh();
@@ -689,7 +709,7 @@ async function sendPromptToAntigravity(
                                     var summary = d.querySelector('summary');
                                     if (!summary) continue;
                                     var rawLabel = (summary.textContent || '').trim();
-                                    var stripped = rawLabel.replace(/^[^a-zA-Z]+/, '');
+                                    var stripped = rawLabel.replace(/^(?:chevron_right|expand_more)\\s*/i, '').replace(/^[^a-zA-Z]+/, '');
                                     if (!/^(?:thought for|thinking)\\b/i.test(stripped)) continue;
                                     var wasOpen = d.open;
                                     if (!wasOpen) d.open = true;
@@ -732,9 +752,11 @@ async function sendPromptToAntigravity(
                             const combined = sections.join('\n\n');
                             const maxThinkLen = TELEGRAM_MSG_LIMIT - 100;
                             const trimmed = combined.length > maxThinkLen ? combined.slice(0, maxThinkLen) + '...' : combined;
-                            const thinkMsg = `<blockquote expandable>${trimmed}</blockquote>`;
-                            logger.info(`[Bot] Sending thinking block: ${thinkBlocks.length} block(s), ${combined.length} chars`);
-                            await sendMsg(thinkMsg);
+                            const thinkMsg = `<blockquote>${trimmed}</blockquote>`;
+                            if (globalShowThinking) {
+                                logger.info(`[Bot] Sending thinking block: ${thinkBlocks.length} block(s), ${combined.length} chars`);
+                                await sendMsg(thinkMsg);
+                            }
                         } else {
                             logger.info('[Bot] No thinking blocks found in DOM at completion time');
                         }
@@ -1302,6 +1324,12 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         }
     });
 
+    // /think command
+    bot.command('think', async (ctx) => {
+        globalShowThinking = !globalShowThinking;
+        await ctx.reply(`🧠 Thinking process display is now <b>${globalShowThinking ? 'ON' : 'OFF'}</b>.`, { parse_mode: 'HTML' });
+    });
+
     // /cleanup command
     bot.command('cleanup', async (ctx) => {
         const days = Math.max(1, parseInt((ctx.match || '').trim(), 10) || 7);
@@ -1684,7 +1712,9 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         if (data.startsWith(`${DL_NAV_PREFIX}:`)) {
             const nextPath = data.slice(DL_NAV_PREFIX.length + 1);
             const session = chatSessionRepo.findByChannelId(channelKey(ch));
-            let activeWorkspacePath = session?.workspacePath;
+            const binding = workspaceBindingRepo.findByChannelId(channelKey(ch));
+            const relPath = session?.workspacePath || binding?.workspacePath;
+            let activeWorkspacePath = relPath ? workspaceService.getWorkspacePath(relPath) : undefined;
             if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
                 activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
             }
@@ -1701,7 +1731,9 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             const page = parseInt(parts[0], 10);
             const path = parts.slice(1).join(':');
             const session = chatSessionRepo.findByChannelId(channelKey(ch));
-            let activeWorkspacePath = session?.workspacePath;
+            const binding = workspaceBindingRepo.findByChannelId(channelKey(ch));
+            const relPath = session?.workspacePath || binding?.workspacePath;
+            let activeWorkspacePath = relPath ? workspaceService.getWorkspacePath(relPath) : undefined;
             if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
                 activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
             }
@@ -1716,7 +1748,9 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         if (data.startsWith(`${DL_FILE_PREFIX}:`)) {
             const relPath = data.slice(DL_FILE_PREFIX.length + 1);
             const session = chatSessionRepo.findByChannelId(channelKey(ch));
-            let activeWorkspacePath = session?.workspacePath;
+            const binding = workspaceBindingRepo.findByChannelId(channelKey(ch));
+            const wsRelPath = session?.workspacePath || binding?.workspacePath;
+            let activeWorkspacePath = wsRelPath ? workspaceService.getWorkspacePath(wsRelPath) : undefined;
             if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
                 activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
             }
@@ -2177,7 +2211,9 @@ bot.on('message:text', async (ctx) => {
             }
 
             const session = chatSessionRepo.findByChannelId(channelKey(ch));
-            let activeWorkspacePath = session?.workspacePath;
+            const binding = workspaceBindingRepo.findByChannelId(channelKey(ch));
+            const relPath = session?.workspacePath || binding?.workspacePath;
+            let activeWorkspacePath = relPath ? workspaceService.getWorkspacePath(relPath) : undefined;
             if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
                 activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
             }
@@ -2388,7 +2424,9 @@ bot.on('message:text', async (ctx) => {
         const parsed = parseMessageContent(transcript);
         if (parsed.isCommand && parsed.commandName) {
             const session = chatSessionRepo.findByChannelId(channelKey(ch));
-            let activeWorkspacePath = session?.workspacePath;
+            const binding = workspaceBindingRepo.findByChannelId(channelKey(ch));
+            const relPath = session?.workspacePath || binding?.workspacePath;
+            let activeWorkspacePath = relPath ? workspaceService.getWorkspacePath(relPath) : undefined;
             if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
                 activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
             }
@@ -2469,6 +2507,104 @@ bot.on('message:text', async (ctx) => {
             inboundImages: [],
             options: { chatSessionService, chatSessionRepo, topicManager, titleGenerator },
         }).catch((e) => logger.error('[voiceMsg] dispatch failed:', e));
+    });
+
+    // Document message handler
+    bot.on('message:document', async (ctx) => {
+        const ch = getChannel(ctx);
+        const doc = ctx.message.document;
+        if (!doc) return;
+
+        const caption = ctx.message.caption?.trim() || '';
+
+        const resolved = await resolveWorkspaceAndCdp(ch);
+        if (!resolved.ok) { await ctx.reply(resolved.message); return; }
+
+        const session = chatSessionRepo.findByChannelId(channelKey(ch));
+        const binding = workspaceBindingRepo.findByChannelId(channelKey(ch));
+        const relPath = session?.workspacePath || binding?.workspacePath;
+        let activeWorkspacePath = relPath ? workspaceService.getWorkspacePath(relPath) : undefined;
+        if (!activeWorkspacePath && bridge.lastActiveWorkspace) {
+            activeWorkspacePath = workspaceService.getWorkspacePath(bridge.lastActiveWorkspace);
+        }
+
+        if (!activeWorkspacePath) {
+            await ctx.reply('⚠️ No active project. Please connect to a project first before sending files.');
+            return;
+        }
+
+        await ctx.reply(`📥 Downloading ${doc.file_name || 'file'}...`);
+
+        try {
+            const file = await bot.api.getFile(doc.file_id);
+            const filePath = file.file_path;
+            if (!filePath) throw new Error('Telegram returned no file_path');
+
+            const url = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`Download failed (status=${response.status})`);
+
+            const bytes = Buffer.from(await response.arrayBuffer());
+            const fileName = doc.file_name || `file_${Date.now()}`;
+            const localPath = require('path').join(activeWorkspacePath, fileName);
+            await require('fs').promises.writeFile(localPath, bytes);
+
+            logger.info(`[DocumentHandler] Downloaded document to ${localPath} (${bytes.length} bytes)`);
+
+            let promptText = `I have uploaded the file \`${fileName}\` to the root of the workspace.`;
+            if (caption) {
+                promptText += `\n\n${caption}`;
+            }
+
+            // ── Concurrency gate ────────────────────────────────────────────────
+            const wsKey = promptDispatcher.getWorkspaceKey(ch, resolved.cdp);
+            const interruptKey = safeCallbackKey(wsKey);
+            if (promptDispatcher.isBusy(ch, resolved.cdp) && !consumeBypass(interruptKey)) {
+                const position = addPendingInterrupt(interruptKey, {
+                    prompt: promptText,
+                    channel: ch,
+                    cdp: resolved.cdp,
+                    inboundImages: [],
+                    options: { chatSessionService, chatSessionRepo, topicManager, titleGenerator },
+                });
+
+                if (position === null) {
+                    await ctx.reply(`⚠️ Queue full (${MAX_QUEUE_DEPTH} messages pending). Please wait or /stop the current task.`);
+                    return;
+                }
+
+                if (position === 1) {
+                    const keyboard = new InlineKeyboard()
+                        .text('📥 Queue', `interrupt:queue:${interruptKey}`)
+                        .text('⚡ Stop & Send Now', `interrupt:now:${interruptKey}`)
+                        .text('🗑 Discard', `interrupt:discard:${interruptKey}`);
+                    await replyHtml(ctx,
+                        `⏳ <b>AI is still generating a response…</b>\n\n📄 File uploaded: <i>${escapeHtml(fileName)}</i>`,
+                        keyboard,
+                    );
+                } else {
+                    await ctx.reply(`📥 File upload message queued (#${position} in line)`);
+                }
+                return;
+            }
+            // ── End concurrency gate ────────────────────────────────────────────
+
+            const userMsgDetector = bridge.pool.getUserMessageDetector?.(resolved.projectName);
+            if (userMsgDetector) userMsgDetector.addEchoHash(promptText);
+
+            // Fire-and-forget: same pattern as text handler
+            promptDispatcher.send({
+                channel: ch,
+                prompt: promptText,
+                cdp: resolved.cdp,
+                inboundImages: [],
+                options: { chatSessionService, chatSessionRepo, topicManager, titleGenerator },
+            }).catch((e: any) => logger.error('[documentMsg] dispatch failed:', e));
+            
+        } catch (error: any) {
+            logger.error('[DocumentHandler] Download failed:', error?.message || error);
+            await ctx.reply(`❌ Could not download the file: ${error?.message || 'Unknown error'}`);
+        }
     });
 
     logger.info('Starting Remoat Telegram bot...');

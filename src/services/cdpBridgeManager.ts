@@ -278,11 +278,8 @@ export function ensureApprovalDetector(
 
             if (bridge.autoAccept.isEnabled()) {
                 const accepted = await detector.alwaysAllowButton() || await detector.approveButton();
-                const text = accepted
-                    ? `✅ <b>Auto-approved</b>\nAn action was automatically approved.\n<b>Workspace:</b> ${escapeHtml(projectName)}`
-                    : `⚠️ <b>Auto-approve failed</b>\nManual approval required.\n<b>Workspace:</b> ${escapeHtml(projectName)}`;
-                await sendTelegramMessage(bridge.botApi, targetChannel, text);
                 if (accepted) return;
+                // If not accepted, fall through and send the normal Approval Required message
             }
 
             let text = `🔔 <b>Approval Required</b>\n\n`;

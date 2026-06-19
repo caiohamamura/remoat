@@ -22,6 +22,8 @@ export function buildDownloadBrowserUI(
     const pathHeader = safeCurrentRelPath ? `📁 <b>/${escapeHtml(safeCurrentRelPath)}</b>` : `📁 <b>Root</b>`;
     text += `Current path: ${pathHeader}\nSelect a file to download, or navigate into a folder.\n\n`;
 
+    logger.info(`[DownloadUi] buildDownloadBrowserUI: basePath=${basePath}, safeCurrentRelPath=${safeCurrentRelPath}, absolutePath=${absolutePath}`);
+
     const keyboard = new InlineKeyboard();
 
     try {
