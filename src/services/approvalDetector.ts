@@ -44,7 +44,8 @@ const DETECT_APPROVAL_SCRIPT = `(() => {
     const normalize = (text) => (text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
 
     const allButtons = Array.from(document.querySelectorAll('button'))
-        .filter(btn => btn.offsetParent !== null);
+        .filter(btn => btn.offsetParent !== null)
+        .reverse();
 
     let approveBtn = allButtons.find(btn => {
         const t = normalize(btn.textContent || '');
@@ -77,7 +78,8 @@ const DETECT_APPROVAL_SCRIPT = `(() => {
     if (!container) container = document.body;
 
     const containerButtons = Array.from(container.querySelectorAll('button'))
-        .filter(btn => btn.offsetParent !== null);
+        .filter(btn => btn.offsetParent !== null)
+        .reverse();
 
     const denyBtn = containerButtons.find(btn => {
         const t = normalize(btn.textContent || '');
@@ -145,7 +147,8 @@ const EXPAND_ALWAYS_ALLOW_MENU_SCRIPT = `(() => {
 
     const normalize = (text) => (text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
     const visibleButtons = Array.from(document.querySelectorAll('button'))
-        .filter(btn => btn.offsetParent !== null);
+        .filter(btn => btn.offsetParent !== null)
+        .reverse();
 
     const directAlways = visibleButtons.find(btn => {
         const t = normalize(btn.textContent || '');
@@ -165,7 +168,8 @@ const EXPAND_ALWAYS_ALLOW_MENU_SCRIPT = `(() => {
         || document.body;
 
     const containerButtons = Array.from(container.querySelectorAll('button'))
-        .filter(btn => btn.offsetParent !== null);
+        .filter(btn => btn.offsetParent !== null)
+        .reverse();
 
     const toggleBtn = containerButtons.find(btn => {
         if (btn === allowOnceBtn) return false;
@@ -214,7 +218,7 @@ export function buildClickScript(buttonText: string): string {
         const normalize = (text) => (text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
         const text = ${safeText};
         const wanted = normalize(text);
-        const allButtons = Array.from(document.querySelectorAll('button'));
+        const allButtons = Array.from(document.querySelectorAll('button')).reverse();
         const target = allButtons.find(btn => {
             if (!btn.offsetParent) return false;
             if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
@@ -242,6 +246,7 @@ export function buildClickScript(buttonText: string): string {
                     clientY: clickY,
                 }));
             }
+            return { ok: true, x: clickX, y: clickY };
         }
         return { ok: true };
     })()`;
@@ -424,7 +429,31 @@ export class ApprovalDetector {
     private async clickButton(buttonText: string): Promise<boolean> {
         try {
             const result = await this.runEvaluateScript(buildClickScript(buttonText));
-            return result?.ok === true;
+            if (result?.ok === true) {
+                if (result.x !== undefined && result.y !== undefined) {
+                    try {
+                        await this.cdpService.call('Input.dispatchMouseEvent', {
+                            type: 'mousePressed',
+                            x: result.x,
+                            y: result.y,
+                            button: 'left',
+                            clickCount: 1
+                        });
+                        await new Promise(r => setTimeout(r, 50));
+                        await this.cdpService.call('Input.dispatchMouseEvent', {
+                            type: 'mouseReleased',
+                            x: result.x,
+                            y: result.y,
+                            button: 'left',
+                            clickCount: 1
+                        });
+                    } catch (cdpErr) {
+                        logger.error('[ApprovalDetector] CDP click failed:', cdpErr);
+                    }
+                }
+                return true;
+            }
+            return false;
         } catch (error) {
             logger.error('[ApprovalDetector] Error while clicking button:', error);
             return false;
